@@ -21,11 +21,3 @@ Content-Type: application/json
 {
   "cep": "2990255"
 }
-
-###
-POST http://localhost:8080/cep
-Content-Type: application/json
-
-{
-  "cep": "abcdef12"
-}
