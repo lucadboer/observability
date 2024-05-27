@@ -13,11 +13,10 @@ import (
 	"github.com/go-resty/resty/v2"
 	"github.com/joho/godotenv"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
+	"go.opentelemetry.io/otel/exporters/zipkin"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.7.0"
-	"google.golang.org/grpc"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 )
 
 type ZipCodeRequest struct {
@@ -46,6 +45,10 @@ func main() {
 }
 
 func handleCepRequest(c *gin.Context) {
+	tr := otel.Tracer("service-b")
+	ctx, span := tr.Start(c.Request.Context(), "handleCepRequest")
+	defer span.End()
+
 	var request ZipCodeRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "invalid zipcode"})
@@ -60,7 +63,7 @@ func handleCepRequest(c *gin.Context) {
 
 	log.Printf("Received CEP: %s", cep)
 
-	city, err := getCityByZipCode(cep)
+	city, err := getCityByZipCode(ctx, cep)
 	if err != nil {
 		log.Printf("Error getting city by zip code: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"message": "can not find zipcode"})
@@ -69,7 +72,7 @@ func handleCepRequest(c *gin.Context) {
 
 	log.Printf("City found: %s", city)
 
-	tempC := getTemperature(city)
+	tempC := getTemperature(ctx, city)
 
 	response := WeatherResponse{
 		City:  city,
@@ -90,9 +93,9 @@ func isNumeric(s string) bool {
 	return true
 }
 
-func getCityByZipCode(cep string) (string, error) {
+func getCityByZipCode(ctx context.Context, cep string) (string, error) {
 	client := resty.New()
-	resp, err := client.R().Get(fmt.Sprintf("https://viacep.com.br/ws/%s/json/", cep))
+	resp, err := client.R().SetContext(ctx).Get(fmt.Sprintf("https://viacep.com.br/ws/%s/json/", cep))
 	if err != nil {
 		return "", err
 	}
@@ -106,13 +109,13 @@ func getCityByZipCode(cep string) (string, error) {
 	return result["localidade"].(string), nil
 }
 
-func getTemperature(cityName string) float64 {
+func getTemperature(ctx context.Context, cityName string) float64 {
 	apiKey := os.Getenv("WEATHER_API_KEY")
 	client := resty.New()
 
 	cityName = url.QueryEscape(cityName)
 
-	resp, err := client.R().Get(fmt.Sprintf("https://api.weatherapi.com/v1/current.json?key=%s&q=%s&aqi=yes", apiKey, cityName))
+	resp, err := client.R().SetContext(ctx).Get(fmt.Sprintf("https://api.weatherapi.com/v1/current.json?key=%s&q=%s&aqi=yes", apiKey, cityName))
 	if err != nil {
 		log.Println("Erro ao fazer requisição HTTP:", err)
 		return 0
@@ -141,13 +144,9 @@ func getTemperature(cityName string) float64 {
 }
 
 func initTracer() *sdktrace.TracerProvider {
-	ctx := context.Background()
-	conn, err := grpc.DialContext(ctx, "otel-collector:4317", grpc.WithInsecure())
-	if err != nil {
-		panic(err)
-	}
-
-	exporter, err := otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
+	exporter, err := zipkin.New(
+		"http://zipkin:9411/api/v2/spans",
+	)
 	if err != nil {
 		panic(err)
 	}
@@ -159,6 +158,5 @@ func initTracer() *sdktrace.TracerProvider {
 			semconv.ServiceNameKey.String("service-b"),
 		)),
 	)
-
 	return tp
 }

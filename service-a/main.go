@@ -2,15 +2,16 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/exporters/zipkin"
+	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.4.0"
 )
 
 type ZipCodeRequest struct {
@@ -28,6 +29,10 @@ func main() {
 }
 
 func handleCepRequest(c *gin.Context) {
+	tr := otel.Tracer("service-a")
+	ctx, span := tr.Start(c.Request.Context(), "handleCepRequest")
+	defer span.End()
+
 	var request ZipCodeRequest
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"message": "invalid zipcode"})
@@ -39,24 +44,27 @@ func handleCepRequest(c *gin.Context) {
 		return
 	}
 
-	// Prepare the JSON payload
 	jsonPayload, err := json.Marshal(request)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
 		return
 	}
 
-	resp, err := http.Post("http://service-b:8081/cep", "application/json", bytes.NewBuffer(jsonPayload))
-
-	if err != nil && resp.StatusCode == http.StatusNotFound {
-		fmt.Println(err)
-		c.JSON(http.StatusNotFound, gin.H{"message": "can not find zipcode"})
-		return
-	}
+	req, _ := http.NewRequestWithContext(ctx, "POST", "http://service-b:8081/cep", bytes.NewBuffer(jsonPayload))
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{}
+	resp, err := client.Do(req)
 
 	if err != nil {
 		fmt.Println(err)
 		c.JSON(http.StatusInternalServerError, gin.H{"message": "internal server error"})
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		c.JSON(http.StatusNotFound, gin.H{"message": "can not find zipcode"})
+		return
 	}
 
 	var result map[string]interface{}
@@ -74,11 +82,19 @@ func isNumeric(s string) bool {
 }
 
 func initTracer() *sdktrace.TracerProvider {
-	exp, err := otlptracehttp.New(context.Background(), otlptracehttp.WithInsecure(), otlptracehttp.WithEndpoint("http://otel-collector:4317"))
+	exporter, err := zipkin.New(
+		"http://zipkin:9411/api/v2/spans",
+	)
 	if err != nil {
 		panic(err)
 	}
 
-	tp := sdktrace.NewTracerProvider(sdktrace.WithBatcher(exp))
+	tp := sdktrace.NewTracerProvider(
+		sdktrace.WithBatcher(exporter),
+		sdktrace.WithResource(resource.NewWithAttributes(
+			semconv.SchemaURL,
+			semconv.ServiceNameKey.String("service-a"),
+		)),
+	)
 	return tp
 }
