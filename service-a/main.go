@@ -53,7 +53,10 @@ func handleCepRequest(c *gin.Context) {
 	req, _ := http.NewRequestWithContext(ctx, "POST", "http://service-b:8081/cep", bytes.NewBuffer(jsonPayload))
 	req.Header.Set("Content-Type", "application/json")
 	client := &http.Client{}
+
+	_, cepSpan := tr.Start(ctx, "get-cep")
 	resp, err := client.Do(req)
+	cepSpan.End()
 
 	if err != nil {
 		fmt.Println(err)

@@ -63,7 +63,10 @@ func handleCepRequest(c *gin.Context) {
 
 	log.Printf("Received CEP: %s", cep)
 
-	city, err := getCityByZipCode(ctx, cep)
+	citySpanCtx, citySpan := tr.Start(ctx, "get-city-name")
+	city, err := getCityByZipCode(citySpanCtx, cep)
+	citySpan.End()
+
 	if err != nil {
 		log.Printf("Error getting city by zip code: %v", err)
 		c.JSON(http.StatusNotFound, gin.H{"message": "can not find zipcode"})
@@ -72,7 +75,9 @@ func handleCepRequest(c *gin.Context) {
 
 	log.Printf("City found: %s", city)
 
-	tempC := getTemperature(ctx, city)
+	tempSpanCtx, tempSpan := tr.Start(ctx, "get-city-temp")
+	tempC := getTemperature(tempSpanCtx, city)
+	tempSpan.End()
 
 	response := WeatherResponse{
 		City:  city,
